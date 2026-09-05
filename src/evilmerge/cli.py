@@ -44,17 +44,44 @@ EXIT_OK = 0
 EXIT_FOUND = 1
 EXIT_ERROR = 2
 
-DROPPED_DETAIL = (
-    "{Comes} out exactly as parent {kept} had {it}. Parent {lost}'s changes "
-    "to {it} are not in the merge and nothing conflicted. `git show --cc` on "
-    "this merge shows nothing here -- it only prints hunks that differ from "
-    "every parent, and {match_clause}."
+# Keyed on git's status letter for the deviation, because "the merge wrote
+# this" and "the merge deleted this" are not the same news and a checker that
+# says the first when it means the second gets ignored, correctly.
+DROPPED_DETAIL = {
+    "M": (
+        "{Comes} out exactly as parent {kept} had {it}. Parent {lost}'s "
+        "changes to {it} are not in the merge and nothing conflicted."
+    ),
+    "D": (
+        "Missing from the merge, exactly as in parent {kept}. Parent {lost} "
+        "still had {it}, a merge of the two keeps {it}, and nothing "
+        "conflicted."
+    ),
+    "A": (
+        "In the merge exactly as parent {kept} had {it}, where a merge of "
+        "the two leaves {it} out. Parent {lost} does not have {it}."
+    ),
+}
+
+DROPPED_CODA = (
+    "`git show --cc` on this merge shows nothing here -- it only prints hunks "
+    "that differ from every parent, and {match_clause}."
 )
 
-FOREIGN_DETAIL = (
-    "Not what merging the parents produces, and not what either parent had. "
-    "Content written during the merge itself."
-)
+FOREIGN_DETAIL = {
+    "M": (
+        "Not what merging the parents produces, and not what either parent "
+        "had. Content written during the merge itself."
+    ),
+    "D": (
+        "Deleted by the merge. Merging the parents keeps {it}, and this "
+        "deletion is in neither parent -- it happened during the merge."
+    ),
+    "A": (
+        "Added by the merge. Merging the parents does not produce {it} and "
+        "neither parent has {it}; it was written during the merge."
+    ),
+}
 
 WHOLESALE_DETAIL = (
     "The merge's tree is byte-identical to parent {kept}. Everything parent "
@@ -243,23 +270,26 @@ def _print_merge(merge: MergeReport, out) -> None:
             out.write(line + "\n")
         return
 
-    for kind, kept, paths in _group(merge):
+    for kind, kept, status, paths in _group(merge):
         out.write(f"  {kind}  {', '.join(paths)}\n")
+        many = len(paths) > 1
+        words = {
+            "kept": kept,
+            "lost": 3 - kept if kept else None,
+            "Comes": "Come" if many else "Comes",
+            "it": "them" if many else "it",
+        }
         if kind == DROPPED:
-            many = len(paths) > 1
-            detail = DROPPED_DETAIL.format(
-                kept=kept,
-                lost=3 - kept,
-                Comes="Come" if many else "Comes",
-                it="them" if many else "it",
+            detail = DROPPED_DETAIL[status].format(**words)
+            detail += " " + DROPPED_CODA.format(
                 match_clause=(
                     f"these match parent {kept} exactly"
                     if many
                     else f"this one matches parent {kept} exactly"
-                ),
+                )
             )
         else:
-            detail = FOREIGN_DETAIL
+            detail = FOREIGN_DETAIL[status].format(**words)
         for line in _wrap(detail, "    "):
             out.write(line + "\n")
 
@@ -274,18 +304,22 @@ def _print_merge(merge: MergeReport, out) -> None:
             out.write(line + "\n")
 
 
-def _group(merge: MergeReport) -> list[tuple[str, int | None, list[str]]]:
-    """Findings gathered by kind and parent, so one sentence covers many paths."""
-    buckets: dict[tuple[str, int | None], list[str]] = {}
+def _group(merge: MergeReport) -> list[tuple[str, int | None, str, list[str]]]:
+    """Findings gathered so that one sentence can honestly cover many paths.
+
+    Grouped by status as well as by kind and parent: two paths only share a
+    description if the same thing happened to both.
+    """
+    buckets: dict[tuple[str, int | None, str], list[str]] = {}
     for finding in merge.findings:
-        buckets.setdefault((finding.kind, finding.kept_parent), []).append(
-            finding.path
-        )
+        key = (finding.kind, finding.kept_parent, finding.status)
+        buckets.setdefault(key, []).append(finding.path)
     order = {DROPPED: 0, FOREIGN: 1}
     return [
-        (kind, kept, sorted(paths))
-        for (kind, kept), paths in sorted(
-            buckets.items(), key=lambda item: (order[item[0][0]], item[0][1] or 0)
+        (kind, kept, status, sorted(paths))
+        for (kind, kept, status), paths in sorted(
+            buckets.items(),
+            key=lambda item: (order[item[0][0]], item[0][1] or 0, item[0][2]),
         )
     ]
 
@@ -316,7 +350,7 @@ def _summary(report: Report) -> str:
     if skipped:
         asides.append(f"{skipped} not checkable")
     if asides:
-        head += " (" + ", ".join(asides) + ")"
+        head = head.rstrip(".") + " (" + ", ".join(asides) + ")."
     return head
 
 
@@ -357,6 +391,7 @@ def _as_json(report: Report) -> dict:
                     {
                         "path": finding.path,
                         "kind": finding.kind,
+                        "status": finding.status,
                         "kept_parent": finding.kept_parent,
                         "lost_parent": finding.lost_parent,
                     }

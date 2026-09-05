@@ -52,6 +52,8 @@ class PathFinding:
     kept_parent: int | None = None
     #: 1-based index of the parent whose changes went missing, for DROPPED.
     lost_parent: int | None = None
+    #: git's status letter for the deviation: A added, D deleted, M modified.
+    status: str = "M"
 
 
 @dataclass
@@ -129,7 +131,8 @@ def check_merge(sha: str, cwd: str) -> MergeReport:
             subject, parents, SKIPPED, reason=_one_line(str(exc))
         )
 
-    deviation = gitcmd.changed_paths(recomputed.tree, sha, cwd)
+    status = gitcmd.changed_status(recomputed.tree, sha, cwd)
+    deviation = frozenset(status)
     resolved_paths = deviation & recomputed.conflicted
     unforced = sorted(deviation - recomputed.conflicted)
 
@@ -163,7 +166,7 @@ def check_merge(sha: str, cwd: str) -> MergeReport:
                 clean_tree=recomputed.tree,
             )
 
-    findings = [_classify(path, against) for path in unforced]
+    findings = [_classify(path, against, status[path]) for path in unforced]
     return MergeReport(
         subject,
         parents,
@@ -175,18 +178,24 @@ def check_merge(sha: str, cwd: str) -> MergeReport:
     )
 
 
-def _classify(path: str, against: list[frozenset[str]]) -> PathFinding:
+def _classify(
+    path: str, against: list[frozenset[str]], status: str
+) -> PathFinding:
     """Decide what happened to one path that the merge changed on its own."""
     matched = [i for i, differing in enumerate(against) if path not in differing]
     if len(matched) == 1:
         kept = matched[0]
         return PathFinding(
-            path, DROPPED, kept_parent=kept + 1, lost_parent=2 - kept
+            path,
+            DROPPED,
+            kept_parent=kept + 1,
+            lost_parent=2 - kept,
+            status=status,
         )
     # Nothing to match against, or -- via git's rename following -- both. In
     # either case the merge's version of this path is not the one merging
     # produces, and no parent alone explains it.
-    return PathFinding(path, FOREIGN)
+    return PathFinding(path, FOREIGN, status=status)
 
 
 def check(cwd: str, range_args: list[str]) -> Report:

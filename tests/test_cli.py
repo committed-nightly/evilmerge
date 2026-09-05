@@ -173,7 +173,13 @@ def test_json_is_machine_readable(repo, capsys):
     merge = payload["merges"][0]
     assert merge["verdict"] == "evil"
     assert merge["findings"] == [
-        {"path": "a.txt", "kind": "dropped", "kept_parent": 1, "lost_parent": 2}
+        {
+            "path": "a.txt",
+            "kind": "dropped",
+            "status": "M",
+            "kept_parent": 1,
+            "lost_parent": 2,
+        }
     ]
     assert len(merge["parents"]) == 2
 
@@ -207,3 +213,33 @@ def test_wholesale_names_the_parent_and_the_count(repo, capsys):
     assert code == 1
     assert "takes parent 1 and nothing else" in out
     assert "2 paths a real merge would have kept" in out
+
+
+def test_a_deletion_is_not_described_as_written_content(repo, capsys):
+    """"Content written during the merge" is the wrong news for a delete."""
+    repo.commit("base", **{"a.txt": "A\n", "gone.txt": "G\n"})
+    repo.branch("feature")
+    repo.commit("feat", **{"a.txt": "A-feature\n"})
+    repo.checkout("main")
+    repo.commit("main", **{"b.txt": "B\n"})
+    # Neither side deletes gone.txt. The merge does.
+    repo.merge_but("feature", "Merge branch 'feature'", **{"gone.txt": None})
+
+    code, out, _ = run(capsys, "-C", str(repo.path))
+    assert code == 1
+    assert "foreign  gone.txt" in out
+    assert "Deleted by the merge" in out
+    assert "written during the merge itself" not in out
+
+
+def test_a_summary_with_an_aside_is_punctuated_once(repo, capsys):
+    repo.commit("base", **{"f.txt": "1\n2\n3\n"})
+    repo.branch("feature")
+    repo.commit("feat", **{"f.txt": "1\nFEATURE\n3\n"})
+    repo.checkout("main")
+    repo.commit("main", **{"f.txt": "1\nMAIN\n3\n"})
+    repo.merge_but("feature", "Merge", **{"f.txt": "1\nBOTH\n3\n"})
+
+    _, out, _ = run(capsys, "-C", str(repo.path))
+    assert "checked. (" not in out
+    assert out.strip().endswith("(1 conflict resolution not shown).")

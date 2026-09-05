@@ -178,6 +178,27 @@ def changed_paths(tree_a: str, tree_b: str, cwd: str) -> frozenset[str]:
     return frozenset(path for path in out.split("\0") if path)
 
 
+def changed_status(tree_a: str, tree_b: str, cwd: str) -> dict[str, str]:
+    """Paths that differ, each with git's status letter for what differs.
+
+    ``A`` -- absent from tree_a, present in tree_b.
+    ``D`` -- present in tree_a, absent from tree_b.
+    ``M`` -- in both, with different content or mode.
+
+    The letter is what makes the difference between telling somebody a merge
+    *wrote* something and telling them a merge *deleted* something, which are
+    not the same news.
+    """
+    out = run_git(
+        ["diff-tree", "-r", "-z", "--no-renames", "--name-status", tree_a, tree_b],
+        cwd,
+    )
+    fields = [field for field in out.split("\0") if field]
+    return {
+        path: status[0] for status, path in zip(fields[::2], fields[1::2])
+    }
+
+
 def diff_paths(tree_a: str, tree_b: str, paths: list[str], cwd: str) -> str:
     """A human-readable diff between two trees, limited to some paths."""
     return run_git(
