@@ -45,10 +45,10 @@ EXIT_FOUND = 1
 EXIT_ERROR = 2
 
 DROPPED_DETAIL = (
-    "Comes out exactly as parent {kept} had it. Parent {lost}'s changes are "
-    "not in the merge, git reports no conflict here, and `git show --cc` on "
-    "this merge shows nothing -- it only prints hunks that differ from every "
-    "parent, and this one matches parent {kept}."
+    "{Comes} out exactly as parent {kept} had {it}. Parent {lost}'s changes "
+    "to {it} are not in the merge and nothing conflicted. `git show --cc` on "
+    "this merge shows nothing here -- it only prints hunks that differ from "
+    "every parent, and {match_clause}."
 )
 
 FOREIGN_DETAIL = (
@@ -122,7 +122,18 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         if args.explain:
-            report = Report([check_merge(gitcmd.resolve(args.explain, cwd), cwd)])
+            sha = gitcmd.resolve(args.explain, cwd)
+            # Pointing --explain at an ordinary commit has to be an error.
+            # Reported as "skipped" it would exit 0, and a checker that exits
+            # 0 because it never ran is the thing this whole family is loud
+            # about not doing.
+            count = len(gitcmd.parents(sha, cwd))
+            if count < 2:
+                raise GitError(
+                    f"not a merge commit: {args.explain} has "
+                    f"{count} parent{'' if count == 1 else 's'}"
+                )
+            report = Report([check_merge(sha, cwd)])
         else:
             report = check(cwd, _range_args(args, cwd))
     except GitError as exc:
@@ -235,7 +246,18 @@ def _print_merge(merge: MergeReport, out) -> None:
     for kind, kept, paths in _group(merge):
         out.write(f"  {kind}  {', '.join(paths)}\n")
         if kind == DROPPED:
-            detail = DROPPED_DETAIL.format(kept=kept, lost=3 - kept)
+            many = len(paths) > 1
+            detail = DROPPED_DETAIL.format(
+                kept=kept,
+                lost=3 - kept,
+                Comes="Come" if many else "Comes",
+                it="them" if many else "it",
+                match_clause=(
+                    f"these match parent {kept} exactly"
+                    if many
+                    else f"this one matches parent {kept} exactly"
+                ),
+            )
         else:
             detail = FOREIGN_DETAIL
         for line in _wrap(detail, "    "):
@@ -280,7 +302,7 @@ def _summary(report: Report) -> str:
     else:
         head = (
             f"{found} {'merge' if found == 1 else 'merges'} changed something "
-            f"on their own, of {total} checked."
+            f"on {'its' if found == 1 else 'their'} own, of {total} checked."
         )
 
     asides = []
