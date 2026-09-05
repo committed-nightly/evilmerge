@@ -40,6 +40,20 @@ def test_git_show_cc_says_nothing_about_it(repo):
     assert "diff --" not in shown
 
 
+def test_git_show_cc_stat_lists_only_the_change_that_survived(repo):
+    """The README shows `git show --cc --stat` on the demo. This is why.
+
+    The stat lists c.txt -- the other branch's change, which the merge did
+    keep -- and looks exactly like an honest merge. a.txt, the one that was
+    thrown away, is not in it.
+    """
+    sha = build_a_quiet_drop(repo)
+
+    shown = repo.git("show", "--cc", "--stat", sha)
+    assert "c.txt" in shown
+    assert "a.txt" not in shown
+
+
 def test_diff_against_the_first_parent_does_not_mention_it(repo):
     """From main's side the merge looks like an ordinary, honest merge.
 
