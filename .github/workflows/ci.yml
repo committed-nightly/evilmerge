@@ -1,0 +1,104 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      # Every test builds a real repository and runs real git against it, so
+      # a runner with no identity configured at all would fail at the first
+      # commit. Each temp repo sets its own; this is only a backstop.
+      - run: |
+          git config --global user.name "ci"
+          git config --global user.email "ci@example.invalid"
+      - run: pip install -e ".[dev]"
+      - run: python -m pytest
+
+  dogfood:
+    # Run the tool for real, against a repository built here, and check the
+    # three verdicts it would be easiest to break by accident.
+    #
+    # The one that matters most is the 2. A checker that exits 0 because it
+    # never ran is the failure this whole family exists to avoid, so the
+    # "pointed at something that isn't a merge" case is pinned first.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e .
+      - run: |
+          git config --global user.name "ci"
+          git config --global user.email "ci@example.invalid"
+
+      # `code=0; cmd || code=$?` rather than `cmd; code=$?`, because these
+      # steps run under `bash -e` and the whole point is to run a command
+      # that exits non-zero.
+      # Deliberately not `--explain HEAD` on this checkout: on a pull_request
+      # event actions/checkout gives you refs/pull/N/merge, which *is* a merge
+      # commit, and the assertion would pass on push and fail on PRs.
+      - name: not a merge is an error, not a pass
+        run: |
+          mkdir /tmp/single && cd /tmp/single && git init -q -b main
+          echo hello > a.txt && git add -A && git commit -qm "only commit"
+          code=0; evilmerge --explain HEAD || code=$?
+          test "$code" -eq 2 || { echo "expected exit 2, got $code"; exit 1; }
+
+      - name: running on this repository does not fall over
+        run: |
+          code=0; evilmerge || code=$?
+          test "$code" -ne 2 || { echo "evilmerge could not run here"; exit 1; }
+
+      - name: build the README's demo repository
+        run: |
+          mkdir /tmp/demo && cd /tmp/demo && git init -q -b main
+          printf 'def widget():\n    return 1\n' > widget.py
+          printf '# Changelog\n'                 > CHANGELOG.md
+          git add -A && git commit -qm "initial"
+          git checkout -qb widgets
+          printf 'def widget():\n    return 1  # fixed\n' > widget.py
+          printf 'def extra():\n    return 3\n'           > extra.py
+          git add -A && git commit -qm "fix widget rounding"
+          git checkout -q main
+          printf '# Changelog\n\n- something\n' > CHANGELOG.md
+          git add -A && git commit -qm "changelog"
+
+      - name: an honest merge is a pass
+        run: |
+          cd /tmp/demo
+          git merge -q --no-ff widgets -m "Merge pull request #12"
+          code=0; evilmerge || code=$?
+          test "$code" -eq 0 || { echo "expected exit 0, got $code"; exit 1; }
+          git reset -q --hard HEAD~1
+
+      - name: the same merge with one change quietly undone is caught
+        run: |
+          cd /tmp/demo
+          git merge --no-commit --no-ff widgets
+          printf 'def widget():\n    return 1\n' > widget.py
+          git add -A && git commit -qm "Merge pull request #12"
+          code=0; evilmerge > out.txt || code=$?
+          test "$code" -eq 1 || { echo "expected exit 1, got $code"; exit 1; }
+          grep -q 'dropped  widget.py' out.txt || {
+            echo "expected a dropped finding for widget.py"; cat out.txt; exit 1; }
+
+      - name: and git itself still says nothing about it
+        # The README's central claim. If a future git starts reporting this
+        # merge, the pitch needs rewriting and this is where we find out.
+        run: |
+          cd /tmp/demo
+          test "$(git show --cc HEAD | grep -c '^diff --git')" -eq 0 || {
+            echo "git show --cc now shows the dropped change"; exit 1; }
